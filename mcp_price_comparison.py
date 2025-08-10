@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 # FastMCP imports
 from fastmcp import FastMCP
-from fastmcp.server.auth.providers.bearer import BearerAuthProvider, RSAKeyPair
+## Note: Running without auth to avoid startup issues from deprecated BearerAuthProvider
 
 # Load environment variables
 load_dotenv()
@@ -29,15 +29,7 @@ MY_NUMBER = os.environ.get("MY_NUMBER", "919823723470")
 assert TOKEN is not None, "AUTH_TOKEN is required"
 assert MY_NUMBER is not None, "MY_NUMBER is required"
 
-# --- Auth Provider ---
-class SimpleBearerAuthProvider(BearerAuthProvider):
-    def __init__(self, token: str):
-        k = RSAKeyPair.generate()
-        super().__init__(k.private_key, k.public_key)
-        self.expected_token = token
-
-    async def verify_token(self, token: str) -> bool:
-        return token == self.expected_token
+# (Auth disabled for now to ensure stable deployment)
 
 # --- Data Models ---
 class PriceResult(BaseModel):
@@ -319,8 +311,7 @@ class PriceComparisonService:
 
 # --- Initialize MCP Server ---
 mcp = FastMCP(
-    "Price Comparison MCP Server",
-    auth=SimpleBearerAuthProvider(TOKEN),
+    "Price Comparison MCP Server"
 )
 
 # --- Tool: validate (required by PuchAI) ---
