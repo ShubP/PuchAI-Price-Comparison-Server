@@ -10,6 +10,8 @@ import re
 from datetime import datetime
 from typing import List, Annotated, Optional
 from pydantic import BaseModel, Field
+import httpx
+from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
 from dotenv import load_dotenv
 
@@ -23,6 +25,7 @@ load_dotenv()
 # Configuration (must be set via environment variables in Railway)
 TOKEN = os.environ.get("AUTH_TOKEN")
 MY_NUMBER = os.environ.get("MY_NUMBER")
+SERPER_API_KEY = os.environ.get("SERPER_API_KEY")
 
 # Debug log for environment configuration
 print(f"[Startup] MY_NUMBER env raw: {MY_NUMBER}")
@@ -79,6 +82,35 @@ class PriceComparisonService:
                 unit = "L"
             return f"{value} {unit}"
         return ""
+
+    @staticmethod
+    def get_domain(url: str) -> str:
+        try:
+            return url.split("//", 1)[-1].split("/", 1)[0]
+        except Exception:
+            return ""
+
+    @staticmethod
+    def map_allowed_platform(url: str) -> Optional[str]:
+        """Return canonical platform name if URL belongs to an allowed provider."""
+        if not url:
+            return None
+        u = url.lower()
+        # Quick commerce / grocery
+        if ("swiggy.com" in u) and ("instamart" in u):
+            return "Swiggy Instamart"
+        if ("blinkit.com" in u) or ("blinkit.app.link" in u):
+            return "Blinkit"
+        if ("zeptonow.com" in u) or ("zepto.app.link" in u) or (".zepto" in u):
+            return "Zepto"
+        # E-commerce
+        if ("amazon.in" in u) or ("amzn.to" in u) or ("a.co" in u):
+            return "Amazon India"
+        if ("flipkart.com" in u) or ("dl.flipkart.com" in u):
+            return "Flipkart"
+        if ("myntra.com" in u) or ("l.myntra.com" in u):
+            return "Myntra"
+        return None
     @staticmethod
     async def search_via_duckduckgo_shopping(query: str) -> List[PriceResult]:
         """Use DuckDuckGo Shopping to fetch real product offers with direct links."""
@@ -86,7 +118,7 @@ class PriceComparisonService:
             results: List[PriceResult] = []
             with DDGS() as ddgs:
                 # region set to IN for India; adjust as needed
-                for item in ddgs.shops(keywords=query, region="in-en", max_results=5):
+                for item in ddgs.shopping(keywords=query, region="in-en", max_results=5):
                     title = item.get("title") or item.get("name") or "Product"
                     price = item.get("price") or item.get("price_str") or ""
                     link = item.get("url") or item.get("link") or ""
@@ -112,6 +144,84 @@ class PriceComparisonService:
         except Exception as e:
             print(f"DuckDuckGo shopping error: {e}")
             return []
+
+    @staticmethod
+    async def search_via_serper_shopping(query: str) -> List[PriceResult]:
+        """Use Serper Google Shopping API when SERPER_API_KEY is provided."""
+        if not SERPER_API_KEY:
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(
+                    "https://google.serper.dev/shopping",
+                    headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+                    json={"q": query, "gl": "in", "hl": "en"},
+                )
+                if resp.status_code != 200:
+                    return []
+                data = resp.json()
+                items = data.get("shopping", []) or data.get("results", [])
+                results: List[PriceResult] = []
+                for it in items[:10]:
+                    title = it.get("title") or it.get("name") or "Product"
+                    link = it.get("link") or it.get("url") or ""
+                    price = it.get("price") or it.get("priceText") or it.get("price_from") or ""
+                    source = it.get("source") or PriceComparisonService.get_domain(link) or "Shop"
+                    if not link:
+                        continue
+                    quantity = PriceComparisonService.extract_quantity(title)
+                    results.append(
+                        PriceResult(
+                            platform=str(source),
+                            price=str(price),
+                            url=link,
+                            availability="",
+                            rating="",
+                            shipping="",
+                            last_updated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            quantity=quantity,
+                        )
+                    )
+                return results
+        except Exception as e:
+            print(f"Serper shopping error: {e}")
+            return []
+
+    @staticmethod
+    async def search_via_duckduckgo_html(query: str) -> List[PriceResult]:
+        """Fallback: scrape DuckDuckGo HTML results for product links and basic price cues."""
+        try:
+            url = "https://html.duckduckgo.com/html/"
+            params = {"q": query}
+            headers = {"User-Agent": "Mozilla/5.0"}
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(url, data=params, headers=headers)
+                if resp.status_code != 200:
+                    return []
+            soup = BeautifulSoup(resp.text, "html.parser")
+            results: List[PriceResult] = []
+            for a in soup.select("a.result__a")[:10]:
+                title = a.get_text(strip=True)
+                link = a.get("href")
+                if not link:
+                    continue
+                quantity = PriceComparisonService.extract_quantity(title)
+                results.append(
+                    PriceResult(
+                        platform=PriceComparisonService.get_domain(link),
+                        price="",
+                        url=link,
+                        availability="",
+                        rating="",
+                        shipping="",
+                        last_updated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        quantity=quantity,
+                    )
+                )
+            return results
+        except Exception as e:
+            print(f"DuckDuckGo HTML scrape error: {e}")
+            return []
     @staticmethod
     async def search_amazon_india(query: str) -> List[PriceResult]:
         """Filter results to Amazon India."""
@@ -136,8 +246,8 @@ class PriceComparisonService:
         ddg = await PriceComparisonService.search_via_duckduckgo_shopping(query)
         domain_map = {
             "Swiggy Instamart": ["swiggy.com", "instamart"],
+            "Blinkit": ["blinkit.com", "blinkit.app.link"],
             "Zepto": ["zepto", "zeptonow"],
-            "BigBasket": ["bigbasket.com"],
         }
         needles = domain_map.get(platform, [])
         return [r for r in ddg if any(n in r.url for n in needles)]
@@ -148,29 +258,34 @@ class PriceComparisonService:
         try:
             print(f"🔍 Searching for: {query}")
             normalized_query = PriceComparisonService.normalize_query(query)
-            # Real shopping results first
-            ddg_results = await PriceComparisonService.search_via_duckduckgo_shopping(normalized_query)
+            # Try Serper first
+            serper_results = await PriceComparisonService.search_via_serper_shopping(normalized_query)
+            # Then DuckDuckGo Shopping
+            ddg_results = await PriceComparisonService.search_via_duckduckgo_shopping(normalized_query) if not serper_results else []
+            # Then fallback to HTML search
+            ddg_html_results = await PriceComparisonService.search_via_duckduckgo_html(normalized_query) if not (serper_results or ddg_results) else []
 
-            # Platform-specific filters from the same data source
-            amazon_results = [r for r in ddg_results if "amazon.in" in r.url]
-            flipkart_results = [r for r in ddg_results if "flipkart.com" in r.url]
-            myntra_results = [r for r in ddg_results if "myntra.com" in r.url]
+            # Merge sources
+            merged = serper_results or ddg_results or ddg_html_results
+
+            # Filter strictly to allowed providers and set canonical names
+            all_results: List[PriceResult] = []
+            for r in merged:
+                canonical = PriceComparisonService.map_allowed_platform(r.url)
+                if canonical is None:
+                    continue
+                r.platform = canonical
+                all_results.append(r)
             
-            # Quick commerce platforms
-            swiggy_results = await PriceComparisonService.search_quick_commerce(query, "Swiggy Instamart")
-            zepto_results = await PriceComparisonService.search_quick_commerce(query, "Zepto")
-            bigbasket_results = await PriceComparisonService.search_quick_commerce(query, "BigBasket")
-            
-            # Combine all results
-            all_results = []
-            # Prefer real results at the top
-            all_results.extend(ddg_results)
-            all_results.extend(amazon_results)
-            all_results.extend(flipkart_results)
-            all_results.extend(myntra_results)
-            all_results.extend(swiggy_results)
-            all_results.extend(zepto_results)
-            all_results.extend(bigbasket_results)
+            # Also try pulling quick-commerce explicitly (optional boost)
+            # These use the same source but ensure inclusion if not present
+            for qc in ["Swiggy Instamart", "Blinkit", "Zepto"]:
+                extra = await PriceComparisonService.search_quick_commerce(normalized_query, qc)
+                for r in extra:
+                    canonical = PriceComparisonService.map_allowed_platform(r.url)
+                    if canonical and all((r.url != x.url) for x in all_results):
+                        r.platform = canonical
+                        all_results.append(r)
             
             # Find best deal
             best_deal = "No results found"
