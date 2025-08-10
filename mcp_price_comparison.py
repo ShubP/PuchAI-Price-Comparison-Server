@@ -820,56 +820,14 @@ async def deal_finder(
 
 # --- Run MCP Server ---
 async def main():
-    # Get port from environment variable (for Heroku) or use default
-    port = int(os.environ.get("PORT", 8086))
+    # Get port from environment variable (for Railway) or use default
+    port = int(os.environ.get("PORT", 8080))
     print(f"🚀 Starting Price Comparison MCP server on http://0.0.0.0:{port}")
     print("🛒 Available tools:")
     print("   • price_comparison - Compare prices across multiple platforms")
     print("   • quick_price_check - Quick price check for groceries")
     print("   • price_tracker - Track price history and set alerts")
     print("   • deal_finder - Find best deals and offers")
-    
-    # Add a simple health check endpoint
-    from fastapi import FastAPI
-    from fastapi.responses import JSONResponse
-    import uvicorn
-    import threading
-    
-    app = FastAPI()
-    
-    @app.get("/validate")
-    async def health_check():
-        return JSONResponse(
-            content={
-                "status": "healthy",
-                "service": "Price Comparison MCP Server",
-                "timestamp": datetime.now().isoformat(),
-                "phone_number": str(MY_NUMBER)
-            },
-            status_code=200
-        )
-    
-    @app.get("/")
-    async def root():
-        return JSONResponse(
-            content={
-                "message": "Price Comparison MCP Server",
-                "status": "running",
-                "mcp_endpoint": "/mcp/",
-                "health_check": "/validate"
-            },
-            status_code=200
-        )
-    
-    # Start FastAPI server in a separate thread
-    def run_fastapi():
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="error")
-    
-    fastapi_thread = threading.Thread(target=run_fastapi, daemon=True)
-    fastapi_thread.start()
-    
-    # Give FastAPI time to start
-    await asyncio.sleep(1)
     
     # Run the MCP server
     await mcp.run_async("streamable-http", host="0.0.0.0", port=port)
