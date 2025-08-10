@@ -111,6 +111,17 @@ class PriceComparisonService:
         if ("myntra.com" in u) or ("l.myntra.com" in u):
             return "Myntra"
         return None
+
+    @staticmethod
+    def parse_price_from_text(text: str) -> str:
+        if not text:
+            return ""
+        # Extract first currency-like token (₹ or numbers with commas)
+        m = re.search(r"₹\s*([0-9][0-9,]*\.?[0-9]*)", text)
+        if m:
+            return f"₹{m.group(1)}"
+        m2 = re.search(r"\b([0-9][0-9,]*\.?[0-9]*)\b", text)
+        return m2.group(1) if m2 else ""
     @staticmethod
     async def search_via_duckduckgo_shopping(query: str) -> List[PriceResult]:
         """Use DuckDuckGo Shopping to fetch real product offers with direct links."""
@@ -222,6 +233,51 @@ class PriceComparisonService:
         except Exception as e:
             print(f"DuckDuckGo HTML scrape error: {e}")
             return []
+
+    @staticmethod
+    async def search_site_via_serper(query: str, site_expr: str) -> List[PriceResult]:
+        """Search a specific site using Serper web search and return filtered results."""
+        if not SERPER_API_KEY:
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(
+                    "https://google.serper.dev/search",
+                    headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+                    json={"q": f"{query} site:{site_expr}", "gl": "in", "hl": "en"},
+                )
+                if resp.status_code != 200:
+                    return []
+                data = resp.json()
+                items = data.get("organic", [])
+                results: List[PriceResult] = []
+                for it in items[:8]:
+                    title = it.get("title") or "Product"
+                    link = it.get("link") or ""
+                    snippet = it.get("snippet") or ""
+                    if not link:
+                        continue
+                    platform = PriceComparisonService.map_allowed_platform(link)
+                    if platform is None:
+                        continue
+                    price_text = PriceComparisonService.parse_price_from_text(title + " " + snippet)
+                    qty = PriceComparisonService.extract_quantity(title)
+                    results.append(
+                        PriceResult(
+                            platform=platform,
+                            price=price_text,
+                            url=link,
+                            availability="",
+                            rating="",
+                            shipping="",
+                            last_updated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            quantity=qty,
+                        )
+                    )
+                return results
+        except Exception as e:
+            print(f"Serper site search error ({site_expr}): {e}")
+            return []
     @staticmethod
     async def search_amazon_india(query: str) -> List[PriceResult]:
         """Filter results to Amazon India."""
@@ -276,16 +332,25 @@ class PriceComparisonService:
                     continue
                 r.platform = canonical
                 all_results.append(r)
-            
-            # Also try pulling quick-commerce explicitly (optional boost)
-            # These use the same source but ensure inclusion if not present
-            for qc in ["Swiggy Instamart", "Blinkit", "Zepto"]:
-                extra = await PriceComparisonService.search_quick_commerce(normalized_query, qc)
-                for r in extra:
-                    canonical = PriceComparisonService.map_allowed_platform(r.url)
-                    if canonical and all((r.url != x.url) for x in all_results):
-                        r.platform = canonical
-                        all_results.append(r)
+
+            # If still empty or missing key platforms, run site-specific searches (Serper web)
+            needed_sites = {
+                "Amazon India": ["amazon.in"],
+                "Flipkart": ["flipkart.com"],
+                "Myntra": ["myntra.com"],
+                "Swiggy Instamart": ["swiggy.com"],
+                "Blinkit": ["blinkit.com", "blinkit.app.link"],
+                "Zepto": ["zeptonow.com", "zepto.app.link"],
+            }
+            have_platforms = set(r.platform for r in all_results)
+            for platform, sites in needed_sites.items():
+                if platform in have_platforms:
+                    continue
+                for site_expr in sites:
+                    site_results = await PriceComparisonService.search_site_via_serper(normalized_query, site_expr)
+                    for r in site_results:
+                        if all((r.url != x.url) for x in all_results):
+                            all_results.append(r)
             
             # Find best deal
             best_deal = "No results found"
