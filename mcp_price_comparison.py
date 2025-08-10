@@ -8,10 +8,9 @@ import asyncio
 import os
 import re
 from datetime import datetime
-from typing import List, Annotated
+from typing import List, Annotated, Optional
 from pydantic import BaseModel, Field
-import httpx
-from bs4 import BeautifulSoup
+from duckduckgo_search import DDGS
 from dotenv import load_dotenv
 
 # FastMCP imports
@@ -42,6 +41,7 @@ class PriceResult(BaseModel):
     rating: str = Field(description="Product rating if available")
     shipping: str = Field(description="Shipping information")
     last_updated: str = Field(description="When this price was last updated")
+    quantity: Optional[str] = Field(default="", description="Detected pack size/quantity, e.g., 500 ml, 1 kg")
 
 class PriceComparisonResult(BaseModel):
     query: str = Field(description="The search query used")
@@ -51,219 +51,110 @@ class PriceComparisonResult(BaseModel):
 
 # --- Price Comparison Service ---
 class PriceComparisonService:
+    PRODUCT_SIZE_REGEX = re.compile(r"(\d+(?:\.\d+)?)\s?(ml|l|g|kg|pcs|pc|pack|packet|tablets|capsules)", re.IGNORECASE)
+
+    @staticmethod
+    def normalize_query(user_query: str) -> str:
+        if not user_query:
+            return ""
+        q = user_query.lower().strip()
+        noise = [
+            "find me", "find", "cheapest", "lowest price", "price of",
+            "buy", "for", "please", "best price",
+        ]
+        for word in noise:
+            q = q.replace(word, " ")
+        q = re.sub(r"\s+", " ", q).strip()
+        return q
+
+    @staticmethod
+    def extract_quantity(text: str) -> str:
+        if not text:
+            return ""
+        m = PriceComparisonService.PRODUCT_SIZE_REGEX.search(text)
+        if m:
+            value, unit = m.group(1), m.group(2)
+            unit = unit.lower()
+            if unit == "l":
+                unit = "L"
+            return f"{value} {unit}"
+        return ""
+    @staticmethod
+    async def search_via_duckduckgo_shopping(query: str) -> List[PriceResult]:
+        """Use DuckDuckGo Shopping to fetch real product offers with direct links."""
+        try:
+            results: List[PriceResult] = []
+            with DDGS() as ddgs:
+                # region set to IN for India; adjust as needed
+                for item in ddgs.shops(keywords=query, region="in-en", max_results=5):
+                    title = item.get("title") or item.get("name") or "Product"
+                    price = item.get("price") or item.get("price_str") or ""
+                    link = item.get("url") or item.get("link") or ""
+                    source = item.get("source") or item.get("merchant") or item.get("seller") or "Shop"
+                    if not link:
+                        continue
+                    # Normalize price text if present
+                    price_text = price if price else ""
+                    quantity = PriceComparisonService.extract_quantity(title)
+                    results.append(
+                        PriceResult(
+                            platform=str(source),
+                            price=price_text,
+                            url=link,
+                            availability="",
+                            rating="",
+                            shipping="",
+                            last_updated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            quantity=quantity,
+                        )
+                    )
+            return results
+        except Exception as e:
+            print(f"DuckDuckGo shopping error: {e}")
+            return []
     @staticmethod
     async def search_amazon_india(query: str) -> List[PriceResult]:
-        """Search Amazon India for products with simulated data"""
-        try:
-            # For hackathon demo, return simulated data
-            simulated_data = {
-                "laptop": [
-                    PriceResult(
-                        platform="Amazon India",
-                        price="₹45,999",
-                        url="https://www.amazon.in",
-                        availability="In Stock",
-                        rating="4.2★",
-                        shipping="Free delivery",
-                        last_updated=datetime.now().strftime("%Y-%m-%d %H:%M")
-                    )
-                ],
-                "iphone": [
-                    PriceResult(
-                        platform="Amazon India",
-                        price="₹79,900",
-                        url="https://www.amazon.in",
-                        availability="In Stock",
-                        rating="4.5★",
-                        shipping="Free delivery",
-                        last_updated=datetime.now().strftime("%Y-%m-%d %H:%M")
-                    )
-                ],
-                "headphones": [
-                    PriceResult(
-                        platform="Amazon India",
-                        price="₹2,499",
-                        url="https://www.amazon.in",
-                        availability="In Stock",
-                        rating="4.1★",
-                        shipping="Free delivery",
-                        last_updated=datetime.now().strftime("%Y-%m-%d %H:%M")
-                    )
-                ]
-            }
-            
-            query_lower = query.lower()
-            for item, results in simulated_data.items():
-                if item in query_lower:
-                    return results
-                    
-            # Default result
-            return [
-                PriceResult(
-                    platform="Amazon India",
-                    price="₹1,999",
-                    url="https://www.amazon.in",
-                    availability="In Stock",
-                    rating="4.0★",
-                    shipping="Free delivery",
-                    last_updated=datetime.now().strftime("%Y-%m-%d %H:%M")
-                )
-            ]
-        except Exception as e:
-            print(f"Amazon search error: {e}")
-            return []
+        """Filter results to Amazon India."""
+        ddg = await PriceComparisonService.search_via_duckduckgo_shopping(query)
+        return [r for r in ddg if "amazon.in" in r.url]
 
     @staticmethod
     async def search_flipkart(query: str) -> List[PriceResult]:
-        """Search Flipkart with simulated data"""
-        try:
-            simulated_data = {
-                "laptop": [
-                    PriceResult(
-                        platform="Flipkart",
-                        price="₹44,999",
-                        url="https://www.flipkart.com",
-                        availability="In Stock",
-                        rating="4.3★",
-                        shipping="Free delivery",
-                        last_updated=datetime.now().strftime("%Y-%m-%d %H:%M")
-                    )
-                ],
-                "iphone": [
-                    PriceResult(
-                        platform="Flipkart",
-                        price="₹78,999",
-                        url="https://www.flipkart.com",
-                        availability="Limited Stock",
-                        rating="4.4★",
-                        shipping="Free delivery",
-                        last_updated=datetime.now().strftime("%Y-%m-%d %H:%M")
-                    )
-                ],
-                "headphones": [
-                    PriceResult(
-                        platform="Flipkart",
-                        price="₹2,399",
-                        url="https://www.flipkart.com",
-                        availability="In Stock",
-                        rating="4.2★",
-                        shipping="Free delivery",
-                        last_updated=datetime.now().strftime("%Y-%m-%d %H:%M")
-                    )
-                ]
-            }
-            
-            query_lower = query.lower()
-            for item, results in simulated_data.items():
-                if item in query_lower:
-                    return results
-                    
-            return [
-                PriceResult(
-                    platform="Flipkart",
-                    price="₹1,899",
-                    url="https://www.flipkart.com",
-                    availability="In Stock",
-                    rating="4.1★",
-                    shipping="Free delivery",
-                    last_updated=datetime.now().strftime("%Y-%m-%d %H:%M")
-                )
-            ]
-        except Exception as e:
-            print(f"Flipkart search error: {e}")
-            return []
+        """Filter results to Flipkart."""
+        ddg = await PriceComparisonService.search_via_duckduckgo_shopping(query)
+        return [r for r in ddg if "flipkart.com" in r.url]
 
     @staticmethod
     async def search_myntra(query: str) -> List[PriceResult]:
-        """Search Myntra with simulated data"""
-        try:
-            simulated_data = {
-                "shoes": [
-                    PriceResult(
-                        platform="Myntra",
-                        price="₹3,499",
-                        url="https://www.myntra.com",
-                        availability="In Stock",
-                        rating="4.0★",
-                        shipping="Free delivery on orders above ₹799",
-                        last_updated=datetime.now().strftime("%Y-%m-%d %H:%M")
-                    )
-                ],
-                "shirt": [
-                    PriceResult(
-                        platform="Myntra",
-                        price="₹1,299",
-                        url="https://www.myntra.com",
-                        availability="Few Left",
-                        rating="4.2★",
-                        shipping="Free delivery on orders above ₹799",
-                        last_updated=datetime.now().strftime("%Y-%m-%d %H:%M")
-                    )
-                ]
-            }
-            
-            query_lower = query.lower()
-            for item, results in simulated_data.items():
-                if item in query_lower:
-                    return results
-                    
-            return []
-        except Exception as e:
-            print(f"Myntra search error: {e}")
-            return []
+        """Filter results to Myntra."""
+        ddg = await PriceComparisonService.search_via_duckduckgo_shopping(query)
+        return [r for r in ddg if "myntra.com" in r.url]
 
     @staticmethod
     async def search_quick_commerce(query: str, platform: str) -> List[PriceResult]:
-        """Search quick commerce platforms with simulated data"""
-        try:
-            base_prices = {
-                "milk": "₹65",
-                "bread": "₹25",
-                "eggs": "₹80",
-                "rice": "₹120",
-                "oil": "₹180"
-            }
-            
-            query_lower = query.lower()
-            for item, price in base_prices.items():
-                if item in query_lower:
-                    return [
-                        PriceResult(
-                            platform=platform,
-                            price=price,
-                            url=f"https://www.{platform.lower().replace(' ', '')}.com",
-                            availability="Available",
-                            rating="4.0★",
-                            shipping="10-30 min delivery",
-                            last_updated=datetime.now().strftime("%Y-%m-%d %H:%M")
-                        )
-                    ]
-            
-            return [
-                PriceResult(
-                    platform=platform,
-                    price="₹99",
-                    url=f"https://www.{platform.lower().replace(' ', '')}.com",
-                    availability="Available",
-                    rating="4.0★",
-                    shipping="10-30 min delivery",
-                    last_updated=datetime.now().strftime("%Y-%m-%d %H:%M")
-                )
-            ]
-        except Exception as e:
-            print(f"{platform} search error: {e}")
-            return []
+        """Filter results for quick commerce domains (best effort)."""
+        ddg = await PriceComparisonService.search_via_duckduckgo_shopping(query)
+        domain_map = {
+            "Swiggy Instamart": ["swiggy.com", "instamart"],
+            "Zepto": ["zepto", "zeptonow"],
+            "BigBasket": ["bigbasket.com"],
+        }
+        needles = domain_map.get(platform, [])
+        return [r for r in ddg if any(n in r.url for n in needles)]
 
     @staticmethod
     async def compare_prices(query: str) -> PriceComparisonResult:
         """Compare prices across all platforms"""
         try:
             print(f"🔍 Searching for: {query}")
-            
-            # Search all platforms concurrently
-            amazon_results = await PriceComparisonService.search_amazon_india(query)
-            flipkart_results = await PriceComparisonService.search_flipkart(query)
-            myntra_results = await PriceComparisonService.search_myntra(query)
+            normalized_query = PriceComparisonService.normalize_query(query)
+            # Real shopping results first
+            ddg_results = await PriceComparisonService.search_via_duckduckgo_shopping(normalized_query)
+
+            # Platform-specific filters from the same data source
+            amazon_results = [r for r in ddg_results if "amazon.in" in r.url]
+            flipkart_results = [r for r in ddg_results if "flipkart.com" in r.url]
+            myntra_results = [r for r in ddg_results if "myntra.com" in r.url]
             
             # Quick commerce platforms
             swiggy_results = await PriceComparisonService.search_quick_commerce(query, "Swiggy Instamart")
@@ -272,6 +163,8 @@ class PriceComparisonService:
             
             # Combine all results
             all_results = []
+            # Prefer real results at the top
+            all_results.extend(ddg_results)
             all_results.extend(amazon_results)
             all_results.extend(flipkart_results)
             all_results.extend(myntra_results)
