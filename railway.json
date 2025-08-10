@@ -3,7 +3,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python combined_server.py",
+    "startCommand": "python mcp_price_comparison.py",
     "healthcheckPath": "/validate",
     "healthcheckTimeout": 100,
     "restartPolicyType": "ON_FAILURE"

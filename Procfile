@@ -1,1 +1,1 @@
-web: python combined_server.py
+web: python mcp_price_comparison.py
