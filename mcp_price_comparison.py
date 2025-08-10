@@ -17,8 +17,8 @@ import time
 # --- Load environment variables ---
 load_dotenv()
 
-TOKEN = os.environ.get("AUTH_TOKEN")
-MY_NUMBER = os.environ.get("MY_NUMBER")
+TOKEN = os.environ.get("AUTH_TOKEN", "supersecret")
+MY_NUMBER = os.environ.get("MY_NUMBER", "919823723470")
 
 assert TOKEN is not None, "Please set AUTH_TOKEN in your .env file"
 assert MY_NUMBER is not None, "Please set MY_NUMBER in your .env file"
