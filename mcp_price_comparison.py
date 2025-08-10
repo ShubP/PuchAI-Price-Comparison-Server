@@ -21,13 +21,12 @@ from fastmcp import FastMCP
 # Load environment variables
 load_dotenv()
 
-# Configuration
-TOKEN = os.environ.get("AUTH_TOKEN", "supersecret")
-MY_NUMBER = os.environ.get("MY_NUMBER", "919823723470")
+# Configuration (must be set via environment variables in Railway)
+TOKEN = os.environ.get("AUTH_TOKEN")
+MY_NUMBER = os.environ.get("MY_NUMBER")
 
 # Validation
-assert TOKEN is not None, "AUTH_TOKEN is required"
-assert MY_NUMBER is not None, "MY_NUMBER is required"
+assert MY_NUMBER is not None, "MY_NUMBER is required (set Railway env var to your PuchAI phone in {country_code}{number} format, e.g., 919876543210)"
 
 # (Auth disabled for now to ensure stable deployment)
 
