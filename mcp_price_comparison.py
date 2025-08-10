@@ -573,7 +573,9 @@ mcp = FastMCP(
 # --- Tool: validate (required by Puch) ---
 @mcp.tool
 async def validate() -> str:
-    return MY_NUMBER
+    # Ensure the number is in the correct format: {country_code}{number}
+    # MY_NUMBER should be in format like "919876543210" (91 = India country code)
+    return str(MY_NUMBER)
 
 # --- Tool: price_comparison ---
 @mcp.tool(description="Compare prices across multiple e-commerce platforms including Amazon, Flipkart, Myntra, Swiggy Instamart, Zepto, and BigBasket. Perfect for finding the best deals on products and groceries.")
