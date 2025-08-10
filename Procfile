@@ -1,1 +1,1 @@
-web: python mcp_price_comparison.py
+web: python health_check_server.py
