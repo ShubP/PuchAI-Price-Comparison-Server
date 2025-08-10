@@ -342,18 +342,24 @@ async def validate() -> str:
 # --- Tool: price_comparison ---
 @mcp.tool
 async def price_comparison(
-    product_query: Annotated[str, Field(description="The product you want to compare prices for (e.g., 'iPhone 15', 'laptop', 'headphones')")]
+    query: Annotated[str, Field(description="Product or item to compare prices for, e.g., 'Amul milk 500ml', 'iPhone 15 128GB'")]
 ) -> PriceComparisonResult:
-    """Compare prices across multiple e-commerce platforms including Amazon, Flipkart, Myntra, and quick commerce platforms"""
-    return await PriceComparisonService.compare_prices(product_query)
+    """Compare prices across Amazon, Flipkart, Myntra, Swiggy Instamart, Blinkit, Zepto with direct product links"""
+    return await PriceComparisonService.compare_prices(query)
+
+@mcp.tool
+async def price_search(
+    query: Annotated[str, Field(description="Alias for price_comparison; product or item to search")]
+) -> PriceComparisonResult:
+    return await PriceComparisonService.compare_prices(query)
 
 # --- Tool: quick_price_check ---
 @mcp.tool
 async def quick_price_check(
-    item: Annotated[str, Field(description="Grocery or daily essential item to check prices for (e.g., 'milk', 'bread', 'eggs')")]
+    query: Annotated[str, Field(description="Grocery/daily essential item to check prices for, e.g., 'milk 1L', 'bread 400g', 'eggs 12 pack'")]
 ) -> PriceComparisonResult:
     """Quick price check for groceries and daily essentials across quick commerce platforms"""
-    return await PriceComparisonService.compare_prices(item)
+    return await PriceComparisonService.compare_prices(query)
 
 # --- Tool: deal_finder ---
 @mcp.tool
