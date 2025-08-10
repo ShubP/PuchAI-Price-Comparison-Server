@@ -33,7 +33,7 @@ assert MY_NUMBER is not None, "MY_NUMBER is required"
 class SimpleBearerAuthProvider(BearerAuthProvider):
     def __init__(self, token: str):
         k = RSAKeyPair.generate()
-        super().__init__(k.private_key_pem, k.public_key_pem)
+        super().__init__(k.private_key, k.public_key)
         self.expected_token = token
 
     async def verify_token(self, token: str) -> bool:
