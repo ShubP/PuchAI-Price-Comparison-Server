@@ -25,6 +25,9 @@ load_dotenv()
 TOKEN = os.environ.get("AUTH_TOKEN")
 MY_NUMBER = os.environ.get("MY_NUMBER")
 
+# Debug log for environment configuration
+print(f"[Startup] MY_NUMBER env raw: {MY_NUMBER}")
+
 # Validation
 assert MY_NUMBER is not None, "MY_NUMBER is required (set Railway env var to your PuchAI phone in {country_code}{number} format, e.g., 919876543210)"
 
@@ -317,6 +320,7 @@ mcp = FastMCP(
 @mcp.tool
 async def validate() -> str:
     """Validate the MCP server and return phone number"""
+    print(f"[validate] raw MY_NUMBER: {MY_NUMBER}")
     number = str(MY_NUMBER).strip()
     # Remove any non-digit characters
     number = re.sub(r'[^\d]', '', number)
@@ -324,6 +328,7 @@ async def validate() -> str:
     if not number.startswith('91'):
         if len(number) == 10:
             number = '91' + number
+    print(f"[validate] cleaned number to return: {number}")
     return number
 
 # --- Tool: price_comparison ---
