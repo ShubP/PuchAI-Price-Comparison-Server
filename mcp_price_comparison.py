@@ -575,7 +575,19 @@ mcp = FastMCP(
 async def validate() -> str:
     # Ensure the number is in the correct format: {country_code}{number}
     # MY_NUMBER should be in format like "919876543210" (91 = India country code)
-    return str(MY_NUMBER)
+    number = str(MY_NUMBER).strip()
+    
+    # Remove any non-digit characters
+    import re
+    number = re.sub(r'[^\d]', '', number)
+    
+    # Ensure it starts with country code (91 for India)
+    if not number.startswith('91'):
+        # If it doesn't start with 91, assume it's a 10-digit Indian number and add 91
+        if len(number) == 10:
+            number = '91' + number
+    
+    return number
 
 # --- Tool: price_comparison ---
 @mcp.tool(description="Compare prices across multiple e-commerce platforms including Amazon, Flipkart, Myntra, Swiggy Instamart, Zepto, and BigBasket. Perfect for finding the best deals on products and groceries.")
