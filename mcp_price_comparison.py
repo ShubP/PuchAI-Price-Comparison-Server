@@ -828,7 +828,39 @@ async def main():
     print("   • quick_price_check - Quick price check for groceries")
     print("   • price_tracker - Track price history and set alerts")
     print("   • deal_finder - Find best deals and offers")
-    await mcp.run_async("streamable-http", host="0.0.0.0", port=port)
+    
+    # Add health check endpoint
+    from fastapi import FastAPI
+    from fastapi.responses import JSONResponse
+    
+    app = FastAPI()
+    
+    @app.get("/validate")
+    async def health_check():
+        return JSONResponse(
+            content={
+                "status": "healthy",
+                "service": "Price Comparison MCP Server",
+                "timestamp": datetime.now().isoformat(),
+                "phone_number": str(MY_NUMBER)
+            },
+            status_code=200
+        )
+    
+    @app.get("/")
+    async def root():
+        return JSONResponse(
+            content={
+                "message": "Price Comparison MCP Server",
+                "status": "running",
+                "mcp_endpoint": "/mcp/",
+                "health_check": "/validate"
+            },
+            status_code=200
+        )
+    
+    # Run the MCP server with FastAPI
+    await mcp.run_async("streamable-http", host="0.0.0.0", port=port, app=app)
 
 if __name__ == "__main__":
     asyncio.run(main())
