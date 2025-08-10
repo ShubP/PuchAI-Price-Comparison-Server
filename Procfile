@@ -1,1 +1,1 @@
-web: python health_check_server.py
+web: python combined_server.py

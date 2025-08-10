@@ -3,7 +3,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python health_check_server.py",
+    "startCommand": "python combined_server.py",
     "healthcheckPath": "/validate",
     "healthcheckTimeout": 100,
     "restartPolicyType": "ON_FAILURE"
