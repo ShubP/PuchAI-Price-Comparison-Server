@@ -41,6 +41,7 @@ class PriceResult(BaseModel):
     url: str = Field(description="URL to the product page")
     last_updated: str = Field(description="When this price was last updated")
     quantity: Optional[str] = Field(default="", description="Detected pack size/quantity, e.g., 500 ml, 1 kg")
+    delivery: Optional[str] = Field(default="", description="Delivery info if available (e.g., Free delivery, 10-30 min)")
 
 class PriceComparisonResult(BaseModel):
     query: str = Field(description="The search query used")
@@ -59,6 +60,69 @@ class PriceComparisonService:
         "mango", "vanilla", "strawberry", "mint", "masala",
         "lychee", "cola zero", "caffeine-free",
     }
+    # Very small brand hints for common beverages; extend as needed
+    BRAND_HINTS = {
+        "coke": {"coke", "coca", "coca-cola", "coca cola"},
+        "coca": {"coke", "coca", "coca-cola", "coca cola"},
+        "coca-cola": {"coke", "coca", "coca-cola", "coca cola"},
+        "thums": {"thums", "thums up", "thumbs up"},
+        "pepsi": {"pepsi"},
+        "sprite": {"sprite"},
+        "fanta": {"fanta"},
+        "mirinda": {"mirinda"},
+        "limca": {"limca"},
+        "dew": {"dew", "mountain dew"},
+        "7up": {"7up"},
+    }
+
+    QUICK_COMMERCE_PLATFORMS = {"Swiggy Instamart", "Blinkit", "Zepto"}
+
+    @staticmethod
+    def parse_price_number(price_text: str) -> Optional[float]:
+        if not price_text:
+            return None
+        try:
+            # Keep digits and dot; some prices like "₹40" or "40.00"
+            cleaned = re.sub(r"[^\d.]", "", str(price_text))
+            if cleaned == "":
+                return None
+            return float(cleaned)
+        except Exception:
+            return None
+
+    @staticmethod
+    def choose_vendor_link(preferred_platform: str, item: dict, fallback_link: str) -> str:
+        """From Serper item, pick the most direct vendor link available.
+        Tries several field names and prefers links containing the vendor's domain.
+        """
+        vendor = (preferred_platform or "").lower()
+        candidates = []
+        # Common fields in Serper shopping results and nested offers
+        for key in ("product_link", "productLink", "merchantLink", "sourceLink", "url", "link", "redirect", "productUrl", "product_url"):
+            val = item.get(key)
+            if isinstance(val, str) and val:
+                candidates.append(val)
+        # Pick the first candidate that contains a domain matching the platform
+        domain_hints = {
+            "amazon": "amazon.",
+            "blinkit": "blinkit.",
+            "zepto": "zepto",
+            "instamart": "swiggy.com",
+            "swiggy": "swiggy.com",
+            "jiomart": "jiomart.com",
+            "bigbasket": "bigbasket.com",
+        }
+        hint = None
+        for k, h in domain_hints.items():
+            if k in vendor:
+                hint = h
+                break
+        if hint:
+            for c in candidates:
+                if hint in c.lower():
+                    return c
+        # Fallback to the first reasonable URL or the provided fallback link
+        return candidates[0] if candidates else fallback_link
     
     @staticmethod
     def normalize_query(user_query: str) -> str:
@@ -150,6 +214,23 @@ class PriceComparisonService:
         return filtered or results
 
     @staticmethod
+    def filter_by_brand_hints_if_present(results: List["PriceResult"], query: str) -> List["PriceResult"]:
+        """If the query clearly indicates a brand (e.g., coke, pepsi, thums), keep results matching that brand."""
+        q = (query or "").lower()
+        hinted_tokens: set[str] = set()
+        for key, aliases in PriceComparisonService.BRAND_HINTS.items():
+            if key in q:
+                hinted_tokens.update(aliases)
+        if not hinted_tokens:
+            return results
+        filtered: List[PriceResult] = []
+        for r in results:
+            title = (getattr(r, "title", "") or "").lower()
+            if any(alias in title for alias in hinted_tokens):
+                filtered.append(r)
+        return filtered or results
+
+    @staticmethod
     def get_domain(url: str) -> str:
         try:
             return url.split("//", 1)[-1].split("/", 1)[0]
@@ -160,7 +241,7 @@ class PriceComparisonService:
     def map_allowed_platform(url: str, source_hint: str | None = None) -> Optional[str]:
         """Return canonical platform name if URL or source belongs to an allowed provider.
 
-        Allowed providers: Amazon, Blinkit, Zepto, Swiggy Instamart
+        Allowed providers: Amazon, Blinkit, Zepto, Swiggy Instamart, JioMart Grocery, BigBasket
         """
         # Prefer explicit source name when provided by Serper
         if source_hint:
@@ -184,6 +265,10 @@ class PriceComparisonService:
             return "Blinkit"
         if ("zeptonow.com" in u) or ("zepto.app.link" in u) or (".zepto" in u):
             return "Zepto"
+        if ("jiomart.com" in u) or ("jiomart" in u and "grocery" in u):
+            return "JioMart Grocery"
+        if ("bigbasket.com" in u) or ("bbdaily" in u):
+            return "BigBasket"
         # E-commerce
         if ("amazon.in" in u) or ("amazon.com" in u) or ("amzn.to" in u) or ("a.co" in u):
             return "Amazon"
@@ -205,11 +290,12 @@ class PriceComparisonService:
                 data = resp.json()
                 items = data.get("shopping", []) or data.get("results", [])
                 results: List[PriceResult] = []
-                for it in items[:20]:
+                for it in items[:50]:
                     title = it.get("title") or it.get("name") or "Product"
                     link = it.get("link") or it.get("url") or ""
                     price = it.get("price") or it.get("priceText") or it.get("price_from") or ""
                     source = it.get("source") or PriceComparisonService.get_domain(link) or ""
+                    delivery = it.get("delivery") or it.get("deliveryTime") or it.get("deliveryInfo") or ""
                     if not link:
                         continue
                     quantity = PriceComparisonService.extract_quantity(title)
@@ -217,16 +303,53 @@ class PriceComparisonService:
                     if canonical is None:
                         # Skip non-allowed providers entirely
                         continue
+                    # Choose best vendor link if the default link is a Google aggregator
+                    vendor_link = PriceComparisonService.choose_vendor_link(canonical, it, link)
+                    # Add default quick commerce delivery hint
+                    if not delivery and canonical in PriceComparisonService.QUICK_COMMERCE_PLATFORMS:
+                        delivery = "10-30 min delivery"
                     results.append(
                         PriceResult(
                             platform=str(canonical),
                             title=str(title),
                             price=str(price),
-                            url=link,
+                            url=vendor_link,
                             last_updated=datetime.now().strftime("%Y-%m-%d %H:%M"),
                             quantity=quantity,
+                            delivery=str(delivery) if delivery else "",
                         )
                     )
+
+                    # Also expand seller/offer listings when available to include more buying options
+                    for sellers_key in ("sellers", "offers", "offer", "stores"):
+                        sellers = it.get(sellers_key) or []
+                        if isinstance(sellers, dict):
+                            sellers = [sellers]
+                        for s in sellers:
+                            s_name = s.get("name") or s.get("source") or s.get("seller") or ""
+                            s_link = s.get("link") or s.get("url") or ""
+                            s_price = s.get("price") or s.get("priceText") or s.get("price_from") or price
+                            s_delivery = s.get("delivery") or s.get("deliveryTime") or s.get("deliveryInfo") or delivery
+                            if not s_link and not s_name:
+                                continue
+                            canonical_s = PriceComparisonService.map_allowed_platform(s_link, s_name)
+                            if canonical_s is None:
+                                continue
+                            # Choose best vendor link for seller entry
+                            vendor_s_link = PriceComparisonService.choose_vendor_link(canonical_s, s, s_link or link)
+                            if not s_delivery and canonical_s in PriceComparisonService.QUICK_COMMERCE_PLATFORMS:
+                                s_delivery = "10-30 min delivery"
+                            results.append(
+                                PriceResult(
+                                    platform=str(canonical_s),
+                                    title=str(title),
+                                    price=str(s_price or price),
+                                    url=vendor_s_link,
+                                    last_updated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                    quantity=quantity,
+                                    delivery=str(s_delivery) if s_delivery else "",
+                                )
+                            )
                 return results
         except Exception as e:
             print(f"Serper shopping error: {e}")
@@ -260,19 +383,20 @@ class PriceComparisonService:
                     best_deal="No results available",
                 )
 
-            # Find best deal by numeric price value when present
-            best_deal = "No results found"
-            prices_with_platform: List[tuple[float, str]] = []
+            # Sort all results by numeric price when available and compute best deal
+            priced_pairs: List[tuple[float, PriceResult]] = []
             for result in all_results:
-                price_num_str = re.sub(r"[^\d.]", "", result.price)
-                if price_num_str:
-                    try:
-                        prices_with_platform.append((float(price_num_str), result.platform))
-                    except Exception:
-                        pass
-            if prices_with_platform:
-                best_price, best_platform = min(prices_with_platform, key=lambda x: x[0])
-                best_deal = f"{best_platform} - ₹{best_price:,.0f}"
+                price_num = PriceComparisonService.parse_price_number(result.price)
+                if price_num is not None:
+                    priced_pairs.append((price_num, result))
+            if priced_pairs:
+                priced_pairs.sort(key=lambda x: x[0])
+                sorted_results = [r for _, r in priced_pairs] + [r for r in all_results if PriceComparisonService.parse_price_number(r.price) is None]
+                all_results = sorted_results
+                best_price_num, best_result = priced_pairs[0]
+                best_deal = f"{best_result.platform} - ₹{best_price_num:,.0f}"
+            else:
+                best_deal = "No results found"
 
             platforms_set = {r.platform for r in all_results}
             summary = f"Found {len(all_results)} results across {len(platforms_set)} platforms"
@@ -321,7 +445,7 @@ async def validate(
     return number
 
 # --- Tool: price_comparison ---
-@mcp.tool(description="Search prices for a product across Amazon, Blinkit, Zepto, and Swiggy Instamart using Google Shopping (Serper). Returns title, price and direct product links.")
+@mcp.tool(description="Search prices for a product across Amazon, Blinkit, Zepto, Swiggy Instamart, JioMart Grocery, and BigBasket using Google Shopping (Serper). Returns title, quantity, price, delivery info, and direct product links.")
 async def price_comparison(
     query: Annotated[str, Field(description="Product or item to compare prices for, e.g., 'Amul milk 500ml', 'iPhone 15 128GB'")]
 ) -> PriceComparisonResult:

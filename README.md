@@ -7,6 +7,8 @@ Supported sources:
 - Blinkit
 - Zepto
 - Swiggy Instamart
+- JioMart Grocery
+- BigBasket
 
 All results come from Google Shopping data queried through the Serper API. Results from other sites are ignored.
 
@@ -14,7 +16,7 @@ All results come from Google Shopping data queried through the Serper API. Resul
 
 ### Tools
 
-1. **price_comparison** — Search prices for a specific product across Amazon, Blinkit, Zepto, and Swiggy Instamart. Returns product title, price, platform, and direct link.
+1. **price_comparison** — Search prices for a specific product across Amazon, Blinkit, Zepto, Swiggy Instamart, JioMart Grocery, and BigBasket. Returns product title, quantity (if detected), price, delivery info when available, platform, and direct link. If a specific size is requested (e.g., 750ml), results are constrained to that size; otherwise the tool filters out obvious variant flavors and prefers the most common size.
 2. **price_search** — Alias of `price_comparison`.
 
 ### Data Source and Filtering
