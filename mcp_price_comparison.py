@@ -51,6 +51,14 @@ class PriceComparisonResult(BaseModel):
 # --- Price Comparison Service ---
 class PriceComparisonService:
     PRODUCT_SIZE_REGEX = re.compile(r"(\d+(?:\.\d+)?)\s?(ml|l|g|kg|pcs|pc|pack|packet|tablets|capsules)", re.IGNORECASE)
+    # Tokens that indicate flavors/variants we should avoid when the user didn't specify any
+    VARIANT_EXCLUDE_TOKENS = {
+        "zero", "diet", "sugar free", "sugar-free", "sugarfree",
+        "lite", "light", "max", "extra", "charged", "plus",
+        "cherry", "blast", "berry", "peach", "lemon", "orange",
+        "mango", "vanilla", "strawberry", "mint", "masala",
+        "lychee", "cola zero", "caffeine-free",
+    }
     
     @staticmethod
     def normalize_query(user_query: str) -> str:
@@ -78,6 +86,68 @@ class PriceComparisonService:
                 unit = "L"
             return f"{value} {unit}"
         return ""
+
+    @staticmethod
+    def has_explicit_quantity_in_query(query: str) -> bool:
+        return bool(PriceComparisonService.PRODUCT_SIZE_REGEX.search(query or ""))
+
+    @staticmethod
+    def query_variant_tokens(query: str) -> set:
+        q = (query or "").lower()
+        return {t for t in PriceComparisonService.VARIANT_EXCLUDE_TOKENS if t in q}
+
+    @staticmethod
+    def title_contains_any(title: str, tokens: set) -> bool:
+        t = (title or "").lower()
+        return any(tok in t for tok in tokens)
+
+    @staticmethod
+    def filter_out_variants_if_generic(results: List["PriceResult"], query: str) -> List["PriceResult"]:
+        """If the query is generic (no variant mentioned), drop results containing variant tokens.
+        Never filters when the user includes variant tokens in the query.
+        """
+        tokens_in_query = PriceComparisonService.query_variant_tokens(query)
+        if tokens_in_query:
+            return results
+        exclude = PriceComparisonService.VARIANT_EXCLUDE_TOKENS
+        filtered: List[PriceComparisonResult] = []
+        for r in results:
+            if PriceComparisonService.title_contains_any(getattr(r, "title", ""), exclude):
+                continue
+            filtered.append(r)
+        return filtered or results
+
+    @staticmethod
+    def filter_by_query_quantity_if_any(results: List["PriceResult"], query: str) -> List["PriceResult"]:
+        """If the query contains a specific quantity, keep only matching results."""
+        m = PriceComparisonService.PRODUCT_SIZE_REGEX.search(query or "")
+        if not m:
+            return results
+        query_value = m.group(1)
+        query_unit = m.group(2).lower()
+        if query_unit == "l":
+            query_unit = "L"
+        query_qty = f"{query_value} {query_unit}"
+        matched = [r for r in results if (r.quantity or "").lower().replace("l", "L") == query_qty]
+        return matched or results
+
+    @staticmethod
+    def filter_to_mode_quantity_if_generic(results: List["PriceResult"], query: str) -> List["PriceResult"]:
+        """When no explicit quantity in query, prefer the most common detected quantity across results."""
+        if PriceComparisonService.has_explicit_quantity_in_query(query):
+            return results
+        # Count non-empty quantities
+        counts: dict[str, int] = {}
+        for r in results:
+            q = (r.quantity or "").strip()
+            if q:
+                counts[q] = counts.get(q, 0) + 1
+        if not counts:
+            return results
+        # Choose the most common quantity (mode)
+        mode_qty = max(counts.items(), key=lambda kv: kv[1])[0]
+        filtered = [r for r in results if (r.quantity or "") == mode_qty]
+        return filtered or results
 
     @staticmethod
     def get_domain(url: str) -> str:
@@ -175,7 +245,12 @@ class PriceComparisonService:
             normalized_query = PriceComparisonService.normalize_query(query)
             serper_results = await PriceComparisonService.search_via_serper_shopping(normalized_query)
 
-            all_results: List[PriceResult] = serper_results
+            # Step 1: remove unwanted variants if user asked generic item
+            step1 = PriceComparisonService.filter_out_variants_if_generic(serper_results, normalized_query)
+            # Step 2: if user specified a quantity in the query, keep only that size
+            step2 = PriceComparisonService.filter_by_query_quantity_if_any(step1, normalized_query)
+            # Step 3: if user didn't specify size, prefer the most common quantity
+            all_results: List[PriceResult] = PriceComparisonService.filter_to_mode_quantity_if_generic(step2, normalized_query)
 
             if not all_results:
                 return PriceComparisonResult(
