@@ -203,7 +203,7 @@ curl -H "Content-Type: application/json" -d '{"id":1,"jsonrpc":"2.0","method":"t
 
 ## 🤝 Contributing
 
-This is a hackathon project designed to be useful for the Puch AI community. Feel free to:
+This is a project designed to be useful for the Puch AI community. Feel free to:
 
 - Add support for more platforms
 - Improve price accuracy
