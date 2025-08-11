@@ -16,7 +16,7 @@ async def run(query: str):
     print("Results:")
     for r in result.results:
         qty = f" [{r.quantity}]" if getattr(r, 'quantity', '') else ""
-        print(f"- {r.platform}: {r.price}{qty} -> {r.url}")
+        print(f"- {r.platform}: {r.title} — {r.price}{qty} -> {r.url}")
 
 if __name__ == "__main__":
     q = " ".join(sys.argv[1:]) or "amul milk 500ml"

@@ -11,8 +11,6 @@ from datetime import datetime
 from typing import List, Annotated, Optional
 from pydantic import BaseModel, Field
 import httpx
-from bs4 import BeautifulSoup
-from duckduckgo_search import DDGS
 from dotenv import load_dotenv
 
 # FastMCP imports
@@ -38,11 +36,9 @@ assert MY_NUMBER is not None, "MY_NUMBER is required (set Railway env var to you
 # --- Data Models ---
 class PriceResult(BaseModel):
     platform: str = Field(description="Name of the e-commerce platform")
+    title: str = Field(description="Product title as returned by Google Shopping")
     price: str = Field(description="Price of the product")
     url: str = Field(description="URL to the product page")
-    availability: str = Field(description="Stock availability status")
-    rating: str = Field(description="Product rating if available")
-    shipping: str = Field(description="Shipping information")
     last_updated: str = Field(description="When this price was last updated")
     quantity: Optional[str] = Field(default="", description="Detected pack size/quantity, e.g., 500 ml, 1 kg")
 
@@ -55,7 +51,7 @@ class PriceComparisonResult(BaseModel):
 # --- Price Comparison Service ---
 class PriceComparisonService:
     PRODUCT_SIZE_REGEX = re.compile(r"(\d+(?:\.\d+)?)\s?(ml|l|g|kg|pcs|pc|pack|packet|tablets|capsules)", re.IGNORECASE)
-
+    
     @staticmethod
     def normalize_query(user_query: str) -> str:
         if not user_query:
@@ -91,8 +87,23 @@ class PriceComparisonService:
             return ""
 
     @staticmethod
-    def map_allowed_platform(url: str) -> Optional[str]:
-        """Return canonical platform name if URL belongs to an allowed provider."""
+    def map_allowed_platform(url: str, source_hint: str | None = None) -> Optional[str]:
+        """Return canonical platform name if URL or source belongs to an allowed provider.
+
+        Allowed providers: Amazon, Blinkit, Zepto, Swiggy Instamart
+        """
+        # Prefer explicit source name when provided by Serper
+        if source_hint:
+            s = source_hint.lower()
+            if "amazon" in s:
+                return "Amazon"
+            if "blinkit" in s:
+                return "Blinkit"
+            if "zepto" in s:
+                return "Zepto"
+            if "instamart" in s or "swiggy" in s:
+                return "Swiggy Instamart"
+
         if not url:
             return None
         u = url.lower()
@@ -104,58 +115,9 @@ class PriceComparisonService:
         if ("zeptonow.com" in u) or ("zepto.app.link" in u) or (".zepto" in u):
             return "Zepto"
         # E-commerce
-        if ("amazon.in" in u) or ("amzn.to" in u) or ("a.co" in u):
-            return "Amazon India"
-        if ("flipkart.com" in u) or ("dl.flipkart.com" in u):
-            return "Flipkart"
-        if ("myntra.com" in u) or ("l.myntra.com" in u):
-            return "Myntra"
+        if ("amazon.in" in u) or ("amazon.com" in u) or ("amzn.to" in u) or ("a.co" in u):
+            return "Amazon"
         return None
-
-    @staticmethod
-    def parse_price_from_text(text: str) -> str:
-        if not text:
-            return ""
-        # Extract first currency-like token (₹ or numbers with commas)
-        m = re.search(r"₹\s*([0-9][0-9,]*\.?[0-9]*)", text)
-        if m:
-            return f"₹{m.group(1)}"
-        m2 = re.search(r"\b([0-9][0-9,]*\.?[0-9]*)\b", text)
-        return m2.group(1) if m2 else ""
-    @staticmethod
-    async def search_via_duckduckgo_shopping(query: str) -> List[PriceResult]:
-        """Use DuckDuckGo Shopping to fetch real product offers with direct links."""
-        try:
-            results: List[PriceResult] = []
-            with DDGS() as ddgs:
-                # region set to IN for India; adjust as needed
-                for item in ddgs.shopping(keywords=query, region="in-en", max_results=5):
-                    title = item.get("title") or item.get("name") or "Product"
-                    price = item.get("price") or item.get("price_str") or ""
-                    link = item.get("url") or item.get("link") or ""
-                    source = item.get("source") or item.get("merchant") or item.get("seller") or "Shop"
-                    if not link:
-                        continue
-                    # Normalize price text if present
-                    price_text = price if price else ""
-                    quantity = PriceComparisonService.extract_quantity(title)
-                    results.append(
-                        PriceResult(
-                            platform=str(source),
-                            price=price_text,
-                            url=link,
-                            availability="",
-                            rating="",
-                            shipping="",
-                            last_updated=datetime.now().strftime("%Y-%m-%d %H:%M"),
-                            quantity=quantity,
-                        )
-                    )
-            return results
-        except Exception as e:
-            print(f"DuckDuckGo shopping error: {e}")
-            return []
-
     @staticmethod
     async def search_via_serper_shopping(query: str) -> List[PriceResult]:
         """Use Serper Google Shopping API when SERPER_API_KEY is provided."""
@@ -173,22 +135,24 @@ class PriceComparisonService:
                 data = resp.json()
                 items = data.get("shopping", []) or data.get("results", [])
                 results: List[PriceResult] = []
-                for it in items[:10]:
+                for it in items[:20]:
                     title = it.get("title") or it.get("name") or "Product"
                     link = it.get("link") or it.get("url") or ""
                     price = it.get("price") or it.get("priceText") or it.get("price_from") or ""
-                    source = it.get("source") or PriceComparisonService.get_domain(link) or "Shop"
+                    source = it.get("source") or PriceComparisonService.get_domain(link) or ""
                     if not link:
                         continue
                     quantity = PriceComparisonService.extract_quantity(title)
+                    canonical = PriceComparisonService.map_allowed_platform(link, source)
+                    if canonical is None:
+                        # Skip non-allowed providers entirely
+                        continue
                     results.append(
                         PriceResult(
-                            platform=str(source),
+                            platform=str(canonical),
+                            title=str(title),
                             price=str(price),
                             url=link,
-                            availability="",
-                            rating="",
-                            shipping="",
                             last_updated=datetime.now().strftime("%Y-%m-%d %H:%M"),
                             quantity=quantity,
                         )
@@ -197,191 +161,60 @@ class PriceComparisonService:
         except Exception as e:
             print(f"Serper shopping error: {e}")
             return []
-
-    @staticmethod
-    async def search_via_duckduckgo_html(query: str) -> List[PriceResult]:
-        """Fallback: scrape DuckDuckGo HTML results for product links and basic price cues."""
-        try:
-            url = "https://html.duckduckgo.com/html/"
-            params = {"q": query}
-            headers = {"User-Agent": "Mozilla/5.0"}
-            async with httpx.AsyncClient(timeout=20) as client:
-                resp = await client.post(url, data=params, headers=headers)
-                if resp.status_code != 200:
-                    return []
-            soup = BeautifulSoup(resp.text, "html.parser")
-            results: List[PriceResult] = []
-            for a in soup.select("a.result__a")[:10]:
-                title = a.get_text(strip=True)
-                link = a.get("href")
-                if not link:
-                    continue
-                quantity = PriceComparisonService.extract_quantity(title)
-                results.append(
-                    PriceResult(
-                        platform=PriceComparisonService.get_domain(link),
-                        price="",
-                        url=link,
-                        availability="",
-                        rating="",
-                        shipping="",
-                        last_updated=datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        quantity=quantity,
-                    )
-                )
-            return results
-        except Exception as e:
-            print(f"DuckDuckGo HTML scrape error: {e}")
-            return []
-
-    @staticmethod
-    async def search_site_via_serper(query: str, site_expr: str) -> List[PriceResult]:
-        """Search a specific site using Serper web search and return filtered results."""
-        if not SERPER_API_KEY:
-            return []
-        try:
-            async with httpx.AsyncClient(timeout=20) as client:
-                resp = await client.post(
-                    "https://google.serper.dev/search",
-                    headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
-                    json={"q": f"{query} site:{site_expr}", "gl": "in", "hl": "en"},
-                )
-                if resp.status_code != 200:
-                    return []
-                data = resp.json()
-                items = data.get("organic", [])
-                results: List[PriceResult] = []
-                for it in items[:8]:
-                    title = it.get("title") or "Product"
-                    link = it.get("link") or ""
-                    snippet = it.get("snippet") or ""
-                    if not link:
-                        continue
-                    platform = PriceComparisonService.map_allowed_platform(link)
-                    if platform is None:
-                        continue
-                    price_text = PriceComparisonService.parse_price_from_text(title + " " + snippet)
-                    qty = PriceComparisonService.extract_quantity(title)
-                    results.append(
-                        PriceResult(
-                            platform=platform,
-                            price=price_text,
-                            url=link,
-                            availability="",
-                            rating="",
-                            shipping="",
-                            last_updated=datetime.now().strftime("%Y-%m-%d %H:%M"),
-                            quantity=qty,
-                        )
-                    )
-                return results
-        except Exception as e:
-            print(f"Serper site search error ({site_expr}): {e}")
-            return []
-    @staticmethod
-    async def search_amazon_india(query: str) -> List[PriceResult]:
-        """Filter results to Amazon India."""
-        ddg = await PriceComparisonService.search_via_duckduckgo_shopping(query)
-        return [r for r in ddg if "amazon.in" in r.url]
-
-    @staticmethod
-    async def search_flipkart(query: str) -> List[PriceResult]:
-        """Filter results to Flipkart."""
-        ddg = await PriceComparisonService.search_via_duckduckgo_shopping(query)
-        return [r for r in ddg if "flipkart.com" in r.url]
-
-    @staticmethod
-    async def search_myntra(query: str) -> List[PriceResult]:
-        """Filter results to Myntra."""
-        ddg = await PriceComparisonService.search_via_duckduckgo_shopping(query)
-        return [r for r in ddg if "myntra.com" in r.url]
-
-    @staticmethod
-    async def search_quick_commerce(query: str, platform: str) -> List[PriceResult]:
-        """Filter results for quick commerce domains (best effort)."""
-        ddg = await PriceComparisonService.search_via_duckduckgo_shopping(query)
-        domain_map = {
-            "Swiggy Instamart": ["swiggy.com", "instamart"],
-            "Blinkit": ["blinkit.com", "blinkit.app.link"],
-            "Zepto": ["zepto", "zeptonow"],
-        }
-        needles = domain_map.get(platform, [])
-        return [r for r in ddg if any(n in r.url for n in needles)]
+    # All DuckDuckGo and site scraping helpers removed to comply with Serper-only sourcing
 
     @staticmethod
     async def compare_prices(query: str) -> PriceComparisonResult:
-        """Compare prices across all platforms"""
+        """Compare prices using only Google Shopping (Serper) and restrict to Amazon, Blinkit, Zepto, Swiggy Instamart.
+
+        If no results from the allowed providers are found, summary explicitly states that we couldn't find
+        the requested product on online quick commerce sites.
+        """
         try:
             print(f"🔍 Searching for: {query}")
             normalized_query = PriceComparisonService.normalize_query(query)
-            # Try Serper first
             serper_results = await PriceComparisonService.search_via_serper_shopping(normalized_query)
-            # Then DuckDuckGo Shopping
-            ddg_results = await PriceComparisonService.search_via_duckduckgo_shopping(normalized_query) if not serper_results else []
-            # Then fallback to HTML search
-            ddg_html_results = await PriceComparisonService.search_via_duckduckgo_html(normalized_query) if not (serper_results or ddg_results) else []
 
-            # Merge sources
-            merged = serper_results or ddg_results or ddg_html_results
+            all_results: List[PriceResult] = serper_results
 
-            # Filter strictly to allowed providers and set canonical names
-            all_results: List[PriceResult] = []
-            for r in merged:
-                canonical = PriceComparisonService.map_allowed_platform(r.url)
-                if canonical is None:
-                    continue
-                r.platform = canonical
-                all_results.append(r)
+            if not all_results:
+                return PriceComparisonResult(
+                    query=query,
+                    results=[],
+                    summary="We couldn't find the requested product on online quick commerce sites.",
+                    best_deal="No results available",
+                )
 
-            # If still empty or missing key platforms, run site-specific searches (Serper web)
-            needed_sites = {
-                "Amazon India": ["amazon.in"],
-                "Flipkart": ["flipkart.com"],
-                "Myntra": ["myntra.com"],
-                "Swiggy Instamart": ["swiggy.com"],
-                "Blinkit": ["blinkit.com", "blinkit.app.link"],
-                "Zepto": ["zeptonow.com", "zepto.app.link"],
-            }
-            have_platforms = set(r.platform for r in all_results)
-            for platform, sites in needed_sites.items():
-                if platform in have_platforms:
-                    continue
-                for site_expr in sites:
-                    site_results = await PriceComparisonService.search_site_via_serper(normalized_query, site_expr)
-                    for r in site_results:
-                        if all((r.url != x.url) for x in all_results):
-                            all_results.append(r)
-            
-            # Find best deal
+            # Find best deal by numeric price value when present
             best_deal = "No results found"
-            if all_results:
-                # Extract numeric prices for comparison
-                prices_with_platform = []
-                for result in all_results:
-                    price_num = re.sub(r'[^\d.]', '', result.price)
-                    if price_num:
-                        prices_with_platform.append((float(price_num), result.platform))
-                
-                if prices_with_platform:
-                    best_price, best_platform = min(prices_with_platform, key=lambda x: x[0])
-                    best_deal = f"{best_platform} - ₹{best_price:,.0f}"
-            
-            # Create summary
-            summary = f"Found {len(all_results)} results across {len(set(r.platform for r in all_results))} platforms"
-            
+            prices_with_platform: List[tuple[float, str]] = []
+            for result in all_results:
+                price_num_str = re.sub(r"[^\d.]", "", result.price)
+                if price_num_str:
+                    try:
+                        prices_with_platform.append((float(price_num_str), result.platform))
+                    except Exception:
+                        pass
+            if prices_with_platform:
+                best_price, best_platform = min(prices_with_platform, key=lambda x: x[0])
+                best_deal = f"{best_platform} - ₹{best_price:,.0f}"
+
+            platforms_set = {r.platform for r in all_results}
+            summary = f"Found {len(all_results)} results across {len(platforms_set)} platforms"
+
             return PriceComparisonResult(
                 query=query,
                 results=all_results,
                 summary=summary,
-                best_deal=best_deal
+                best_deal=best_deal,
             )
         except Exception as e:
             print(f"Price comparison error: {e}")
             return PriceComparisonResult(
                 query=query,
                 results=[],
-                summary="Error occurred during price comparison",
-                best_deal="No results available"
+                summary="We couldn't find the requested product on online quick commerce sites.",
+                best_deal="No results available",
             )
 
 # --- Initialize MCP Server ---
@@ -391,91 +224,50 @@ mcp = FastMCP(
 
 # --- Tool: validate (required by PuchAI) ---
 @mcp.tool
-async def validate() -> str:
-    """Validate the MCP server and return phone number"""
-    print(f"[validate] raw MY_NUMBER: {MY_NUMBER}")
-    number = str(MY_NUMBER).strip()
-    # Remove any non-digit characters
-    number = re.sub(r'[^\d]', '', number)
-    # Ensure it starts with country code (91 for India)
-    if not number.startswith('91'):
-        if len(number) == 10:
-            number = '91' + number
-    print(f"[validate] cleaned number to return: {number}")
+async def validate(
+    bearer_token: Annotated[str, Field(description="Bearer token provided by Puch during /mcp connect")]
+) -> str:
+    """Return the server owner's phone number after validating the bearer token.
+
+    The returned value must be in the format {country_code}{number} (e.g., 919876543210).
+    """
+    expected = (TOKEN or "").strip()
+    provided = (bearer_token or "").strip()
+    if expected and provided != expected:
+        # Do not leak details; simply refuse
+        raise Exception("Invalid bearer token")
+
+    number = str(MY_NUMBER or "").strip()
+    number = re.sub(r"[^\d]", "", number)
+    if not number:
+        raise Exception("Server owner phone number not configured")
+    if not number.startswith("91") and len(number) == 10:
+        number = "91" + number
     return number
 
 # --- Tool: price_comparison ---
-@mcp.tool
+@mcp.tool(description="Search prices for a product across Amazon, Blinkit, Zepto, and Swiggy Instamart using Google Shopping (Serper). Returns title, price and direct product links.")
 async def price_comparison(
     query: Annotated[str, Field(description="Product or item to compare prices for, e.g., 'Amul milk 500ml', 'iPhone 15 128GB'")]
 ) -> PriceComparisonResult:
-    """Compare prices across Amazon, Flipkart, Myntra, Swiggy Instamart, Blinkit, Zepto with direct product links"""
     return await PriceComparisonService.compare_prices(query)
 
-@mcp.tool
+@mcp.tool(description="Alias of price_comparison")
 async def price_search(
     query: Annotated[str, Field(description="Alias for price_comparison; product or item to search")]
 ) -> PriceComparisonResult:
     return await PriceComparisonService.compare_prices(query)
 
-# --- Tool: quick_price_check ---
-@mcp.tool
-async def quick_price_check(
-    query: Annotated[str, Field(description="Grocery/daily essential item to check prices for, e.g., 'milk 1L', 'bread 400g', 'eggs 12 pack'")]
-) -> PriceComparisonResult:
-    """Quick price check for groceries and daily essentials across quick commerce platforms"""
-    return await PriceComparisonService.compare_prices(query)
-
-# --- Tool: deal_finder ---
-@mcp.tool
-async def deal_finder(
-    category: Annotated[str, Field(description="Product category to find deals for (e.g., 'electronics', 'fashion', 'groceries')")]
-) -> str:
-    """Find the best deals and offers in a specific category"""
-    try:
-        # Simulate deal finding
-        deals = {
-            "electronics": "📱 iPhone 15: Save ₹5,000 on Amazon | 💻 Laptops: Up to 30% off on Flipkart",
-            "fashion": "👕 Clothing: Flat 50% off on Myntra | 👟 Shoes: Buy 1 Get 1 on select brands",
-            "groceries": "🥛 Dairy products: 15% off on BigBasket | 🍞 Bakery items: Free delivery on Swiggy Instamart"
-        }
-        
-        category_lower = category.lower()
-        for cat, deal_info in deals.items():
-            if cat in category_lower:
-                return f"🔥 Best Deals in {category.title()}:\n{deal_info}"
-        
-        return f"🔍 No specific deals found for '{category}', but check our price comparison tool for the best prices!"
-    except Exception as e:
-        return f"Error finding deals: {e}"
-
-# --- Tool: price_tracker ---
-@mcp.tool
-async def price_tracker(
-    product: Annotated[str, Field(description="Product to track price for")]
-) -> str:
-    """Track price history and set alerts for products"""
-    try:
-        return f"📊 Price tracking enabled for '{product}'!\n\n" \
-               f"💡 Current status:\n" \
-               f"• Historical data: Analyzing past 30 days\n" \
-               f"• Price alerts: Will notify on 10% price drop\n" \
-               f"• Monitoring: Amazon, Flipkart, Myntra\n\n" \
-               f"🔔 You'll receive notifications when prices drop significantly!"
-    except Exception as e:
-        return f"Error setting up price tracking: {e}"
+# Removed extra tools to keep the server focused on the required price search functionality
 
 # --- Run MCP Server ---
 async def main():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 8086))
     print(f"🚀 Starting Price Comparison MCP server on http://0.0.0.0:{port}")
     print("🛒 Available tools:")
     print("   • validate - Validate server connection")
-    print("   • price_comparison - Compare prices across platforms")
-    print("   • quick_price_check - Quick grocery price check")
-    print("   • deal_finder - Find best deals by category")
-    print("   • price_tracker - Track price history and alerts")
-    
+    print("   • price_comparison - Search prices across Amazon, Blinkit, Zepto, Swiggy Instamart")
+    print("   • price_search - Alias for price_comparison")
     await mcp.run_async("streamable-http", host="0.0.0.0", port=port)
 
 if __name__ == "__main__":

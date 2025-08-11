@@ -1,24 +1,27 @@
 # Price Comparison MCP Server for Puch AI
 
-A powerful Model Context Protocol (MCP) server that provides comprehensive price comparison tools for Indian e-commerce platforms. This server helps users find the best deals across multiple platforms including Amazon, Flipkart, Myntra, Swiggy Instamart, Zepto, and BigBasket.
+This MCP server lets Puch compare product prices across a strict set of sources using a single upstream data source (Google Shopping via the Serper API).
+
+Supported sources:
+- Amazon
+- Blinkit
+- Zepto
+- Swiggy Instamart
+
+All results come from Google Shopping data queried through the Serper API. Results from other sites are ignored.
 
 ## 🚀 Features
 
-### Core Tools
+### Tools
 
-1. **Price Comparison** - Compare prices across multiple e-commerce platforms
-2. **Quick Price Check** - Fast price lookup for grocery items and essentials
-3. **Price Tracker** - Monitor price changes and set price drop alerts
-4. **Deal Finder** - Discover the best deals, discounts, and offers
+1. **price_comparison** — Search prices for a specific product across Amazon, Blinkit, Zepto, and Swiggy Instamart. Returns product title, price, platform, and direct link.
+2. **price_search** — Alias of `price_comparison`.
 
-### Supported Platforms
+### Data Source and Filtering
 
-- **Amazon India** - Electronics, books, home goods
-- **Flipkart** - Electronics, fashion, home appliances
-- **Myntra** - Fashion and lifestyle products
-- **Swiggy Instamart** - Groceries and essentials (10-minute delivery)
-- **Zepto** - Quick commerce groceries (10-minute delivery)
-- **BigBasket** - Groceries and household items
+- Data source: Google Shopping via Serper API
+- Only these sources are returned: Amazon, Blinkit, Zepto, Swiggy Instamart
+- If none of the above sources are found, the server responds: “We couldn't find the requested product on online quick commerce sites.”
 
 ## 🛠️ Setup Instructions
 
@@ -32,7 +35,7 @@ A powerful Model Context Protocol (MCP) server that provides comprehensive price
 
 ```bash
 # Navigate to the price comparison directory
-cd mcp-price-comparison
+cd PuchAI-price-comparison
 
 # Install required packages
 pip install -r requirements.txt
@@ -40,11 +43,12 @@ pip install -r requirements.txt
 
 ### Step 2: Configure Environment
 
-Create a `.env` file in the `mcp-price-comparison` directory:
+Create a `.env` file in the `PuchAI-price-comparison` directory:
 
 ```env
 AUTH_TOKEN=your_secret_token_here
 MY_NUMBER=919876543210
+SERPER_API_KEY=your_serper_api_key
 ```
 
 **Important Notes:**
@@ -90,10 +94,19 @@ Deploy to services like:
 
 1. **[Open Puch AI](https://wa.me/+919998881729)** in your browser
 2. **Start a new conversation**
-3. **Use the connect command:**
-   ```
-   /mcp connect https://your-domain.ngrok.app/mcp your_secret_token_here
-   ```
+3. **Use one of the connect commands:**
+
+   - Bearer Token (recommended):
+     ```
+     /mcp connect https://your-domain.ngrok.app/mcp your_secret_token_here
+     ```
+
+     Your MCP server will expose a `validate` tool that accepts the bearer token and returns your phone number in the format `{country_code}{number}`.
+
+   - OAuth (if you implement it separately):
+     ```
+     /mcp connect https://your-domain.ngrok.app/mcp
+     ```
 
 ### Debug Mode
 
@@ -103,77 +116,14 @@ To get more detailed error messages:
 /mcp diagnostics-level debug
 ```
 
-## 🛒 Available Tools
+## 🛒 Examples
 
-### 1. Price Comparison
-
-Compare prices across multiple platforms for any product.
-
-**Usage:**
+Ask Puch any of the following:
 ```
-Compare prices for iPhone 15
-Find the best price for running shoes
-What's the cheapest laptop available?
+Compare prices for iPhone 15 128GB
+Check price of Amul milk 500ml
+Find price for Coca Cola 2L
 ```
-
-**Features:**
-- Multi-platform price comparison
-- Best price identification
-- Price range analysis
-- Availability status
-- Customer ratings
-- Shipping information
-
-### 2. Quick Price Check
-
-Fast price lookup for grocery items and essentials.
-
-**Usage:**
-```
-Check milk prices
-What's the price of bread?
-Compare egg prices
-```
-
-**Features:**
-- Focused on quick commerce platforms
-- 10-30 minute delivery options
-- Fresh grocery pricing
-- Real-time availability
-
-### 3. Price Tracker
-
-Monitor price changes and set price drop alerts.
-
-**Usage:**
-```
-Track iPhone 15 prices with target ₹50,000
-Monitor laptop prices on Amazon
-Set price alert for ₹1000 for running shoes
-```
-
-**Features:**
-- Price history tracking
-- Target price alerts
-- Platform-specific monitoring
-- Price drop notifications
-
-### 4. Deal Finder
-
-Discover the best deals, discounts, and offers.
-
-**Usage:**
-```
-Find deals on electronics under ₹5000
-Show fashion deals
-What grocery deals are available?
-```
-
-**Features:**
-- Category-specific deals
-- Budget range filtering
-- Seasonal offers
-- Platform-specific discounts
 
 ## 💡 Use Cases
 
@@ -191,15 +141,12 @@ What grocery deals are available?
 ## 🔧 Technical Details
 
 ### Architecture
-- **FastMCP**: High-performance MCP server framework
-- **Async/Await**: Non-blocking I/O operations
-- **BeautifulSoup**: HTML parsing for web scraping
-- **Pydantic**: Data validation and serialization
+- **FastMCP** — MCP server framework
+- **Async/Await** — Non-blocking I/O operations
+- **Pydantic** — Data validation and serialization
 
-### Data Sources
-- **Web Scraping**: Real-time price data from e-commerce sites
-- **Simulated APIs**: For platforms without public APIs
-- **Price Databases**: Historical price tracking
+### Data Source
+- **Serper API** (Google Shopping)
 
 ### Security
 - **Bearer Token Authentication**: Secure access control
@@ -230,17 +177,17 @@ What grocery deals are available?
 
 1. **Connection Failed**
    - Ensure your server is running on port 8086
-   - Check that ngrok is properly configured
+   - Check that ngrok (or your hosting) is properly configured over HTTPS
    - Verify your AUTH_TOKEN is correct
 
 2. **No Price Results**
+   - Ensure `SERPER_API_KEY` is set and valid
    - Try different search keywords
-   - Check if the product is available in your area
-   - Some platforms may be temporarily unavailable
+   - If results exist only on non-supported sites, they will be filtered out
 
 3. **Authentication Error**
-   - Verify your MY_NUMBER format (country code + number)
-   - Check that AUTH_TOKEN matches what you use in Puch
+   - Verify your `MY_NUMBER` format (country code + number)
+   - Check that `AUTH_TOKEN` matches what you use in Puch
 
 ### Debug Commands
 
@@ -249,7 +196,7 @@ What grocery deals are available?
 curl http://localhost:8086/health
 
 # Test authentication
-curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:8086/validate
+curl -H "Content-Type: application/json" -d '{"id":1,"jsonrpc":"2.0","method":"tools/call","params":{"name":"validate","arguments":{"bearer_token":"YOUR_TOKEN"}}}' http://localhost:8086/mcp | jq
 ```
 
 ## 🤝 Contributing
