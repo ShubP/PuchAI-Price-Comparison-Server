@@ -51,7 +51,10 @@ class PriceComparisonResult(BaseModel):
 
 # --- Price Comparison Service ---
 class PriceComparisonService:
-    PRODUCT_SIZE_REGEX = re.compile(r"(\d+(?:\.\d+)?)\s?(ml|l|g|kg|pcs|pc|pack|packet|tablets|capsules)", re.IGNORECASE)
+    PRODUCT_SIZE_REGEX = re.compile(
+        r"(\d+(?:\.\d+)?)\s?(ml|millilitre|milliliter|milliliters|millilitres|l|ltr|litre|liter|liters|litres|g|gm|gram|grams|kg|kilogram|kilograms|pcs|pc|pack|packet|tablets|capsules)",
+        re.IGNORECASE,
+    )
     # Tokens that indicate flavors/variants we should avoid when the user didn't specify any
     VARIANT_EXCLUDE_TOKENS = {
         "zero", "diet", "sugar free", "sugar-free", "sugarfree",
@@ -145,11 +148,24 @@ class PriceComparisonService:
         m = PriceComparisonService.PRODUCT_SIZE_REGEX.search(text)
         if m:
             value, unit = m.group(1), m.group(2)
-            unit = unit.lower()
-            if unit == "l":
-                unit = "L"
-            return f"{value} {unit}"
+            unit_norm = PriceComparisonService.normalize_unit(unit)
+            return f"{value} {unit_norm}"
         return ""
+
+    @staticmethod
+    def normalize_unit(unit: str) -> str:
+        u = (unit or "").strip().lower()
+        if u in {"ml", "millilitre", "milliliter", "milliliters", "millilitres"}:
+            return "ml"
+        if u in {"l", "ltr", "litre", "liter", "liters", "litres"}:
+            return "L"
+        if u in {"g", "gm", "gram", "grams"}:
+            return "g"
+        if u in {"kg", "kilogram", "kilograms"}:
+            return "kg"
+        if u in {"pcs", "pc"}:
+            return "pcs"
+        return unit
 
     @staticmethod
     def has_explicit_quantity_in_query(query: str) -> bool:
@@ -196,11 +212,10 @@ class PriceComparisonService:
         return matched or results
 
     @staticmethod
-    def filter_to_mode_quantity_if_generic(results: List["PriceResult"], query: str) -> List["PriceResult"]:
-        """When no explicit quantity in query, prefer the most common detected quantity across results."""
+    def reorder_by_mode_quantity_if_generic(results: List["PriceResult"], query: str) -> List["PriceResult"]:
+        """When no explicit quantity in query, do not drop results; instead, sort to show the most common quantity first."""
         if PriceComparisonService.has_explicit_quantity_in_query(query):
             return results
-        # Count non-empty quantities
         counts: dict[str, int] = {}
         for r in results:
             q = (r.quantity or "").strip()
@@ -208,10 +223,11 @@ class PriceComparisonService:
                 counts[q] = counts.get(q, 0) + 1
         if not counts:
             return results
-        # Choose the most common quantity (mode)
         mode_qty = max(counts.items(), key=lambda kv: kv[1])[0]
-        filtered = [r for r in results if (r.quantity or "") == mode_qty]
-        return filtered or results
+        # Sort: mode quantity first, then others; within same quantity keep original order
+        mode_bucket = [r for r in results if (r.quantity or "") == mode_qty]
+        other_bucket = [r for r in results if (r.quantity or "") != mode_qty]
+        return mode_bucket + other_bucket
 
     @staticmethod
     def filter_by_brand_hints_if_present(results: List["PriceResult"], query: str) -> List["PriceResult"]:
@@ -372,8 +388,8 @@ class PriceComparisonService:
             step1 = PriceComparisonService.filter_out_variants_if_generic(serper_results, normalized_query)
             # Step 2: if user specified a quantity in the query, keep only that size
             step2 = PriceComparisonService.filter_by_query_quantity_if_any(step1, normalized_query)
-            # Step 3: if user didn't specify size, prefer the most common quantity
-            all_results: List[PriceResult] = PriceComparisonService.filter_to_mode_quantity_if_generic(step2, normalized_query)
+            # Step 3: if user didn't specify size, sort by the most common quantity first
+            all_results: List[PriceResult] = PriceComparisonService.reorder_by_mode_quantity_if_generic(step2, normalized_query)
 
             if not all_results:
                 return PriceComparisonResult(
@@ -383,7 +399,7 @@ class PriceComparisonService:
                     best_deal="No results available",
                 )
 
-            # Sort all results by numeric price when available and compute best deal
+            # Sort all results by numeric price when available and compute best deal(s)
             priced_pairs: List[tuple[float, PriceResult]] = []
             for result in all_results:
                 price_num = PriceComparisonService.parse_price_number(result.price)
@@ -393,8 +409,27 @@ class PriceComparisonService:
                 priced_pairs.sort(key=lambda x: x[0])
                 sorted_results = [r for _, r in priced_pairs] + [r for r in all_results if PriceComparisonService.parse_price_number(r.price) is None]
                 all_results = sorted_results
+                # Best overall
                 best_price_num, best_result = priced_pairs[0]
-                best_deal = f"{best_result.platform} - ₹{best_price_num:,.0f}"
+                best_deal = f"Best overall: {best_result.platform} - ₹{best_price_num:,.0f} ({best_result.quantity or 'n/a'})"
+                # Best per size (quantity)
+                per_qty_best: dict[str, tuple[float, PriceResult]] = {}
+                for price_val, res in priced_pairs:
+                    q = (res.quantity or "").strip()
+                    if not q:
+                        continue
+                    prev = per_qty_best.get(q)
+                    if prev is None or price_val < prev[0]:
+                        per_qty_best[q] = (price_val, res)
+                if per_qty_best:
+                    parts = []
+                    # Show up to 3 size groups
+                    for idx, (qty, (pnum, res)) in enumerate(sorted(per_qty_best.items(), key=lambda kv: kv[1][0])):
+                        if idx >= 3:
+                            break
+                        parts.append(f"{qty}: ₹{pnum:,.0f} on {res.platform}")
+                    if parts:
+                        best_deal += " | Best by size: " + "; ".join(parts)
             else:
                 best_deal = "No results found"
 
